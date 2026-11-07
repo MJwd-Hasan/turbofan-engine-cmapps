@@ -2,7 +2,7 @@
 
 An exploratory and predictive analysis of turbofan engine degradation using the NASA C-MAPSS FD001 dataset. The notebook compares survival analysis, tree-based survival models, sensor reduction and clustering, gradient-boosting regressors, hyperparameter search, and SHAP-based explanations.
 
-> **Headline result:** The final segmented XGBoost experiment reports test MAE **20.11 cycles**, C-index **0.830**, and cumulative/dynamic AUC **0.924** on the 100 FD001 test engines. This is the lowest test MAE reported in the notebook, but it is a later, differently specified experiment—not a controlled head-to-head win over every earlier model.
+> **Latest experiment:** The two-regime PCA-XGBoost experiment reports test MAE **18.264 cycles**, RMSE **25.625**, C-index **0.839**, and R² **0.620** on the 100 FD001 test engines. This improves on the earlier median-knot segmented XGBoost result (MAE 20.108), but the early regime contains only 8 test engines (MAE 45.427); the aggregate result is dominated by the 92 later-regime engines (MAE 15.902). Treat this as a promising FD001 experiment, not evidence of external generalization.
 
 ## Contents
 - Project overview
@@ -46,7 +46,8 @@ Each row has 26 columns: engine ID, cycle, three operational settings, and 21 se
 8. Remaining-life regression: XGBoost and LightGBM.
 9. Hyperparameter tuning: Optuna versus Adaptive Greedy Search (AGS), using engine-grouped pseudo-censor validation.
 10. SHAP-guided feature engineering: continuous high-ranking sensors plus quantile-binned sensors.
-11. Segmented regression: separate early- and late-cycle XGBoost models split at the median training cycle.
+11. Median-knot segmented regression: separate early- and late-cycle XGBoost models split at the median training cycle (104), with sensor-bin features and SHAP.
+12. Latest PCA-XGBoost experiment: two separate models split at the training-cycle 25th percentile (52), using operating settings and sensors transformed with training-fitted PCA, engine-grouped pseudo-censor validation, AGS tuning, residual diagnostics, and segment-specific SHAP.
 
 ## Methodology
 
@@ -298,10 +299,104 @@ The largest attributions belong to sensor_14, sensor_12, and several one-hot cat
 
 The early model relies most strongly on cycle, while sensor_14 and sensor_12 dominate the late model's ranking. This shows different model-attribution patterns across the two fitted cycle regimes; it does not establish different causal degradation mechanisms.
 
+## Latest experiment: two-regime PCA-XGBoost
+
+This is the final experiment in the current notebook and should be distinguished from the earlier median-cycle segmented model above. It uses a fixed threshold equal to the **25th percentile of training cycle values (52 cycles)**, then fits one XGBoost model for each regime:
+
+- **Segment 1:** cycle \(\leq52\); 5,200 training rows.
+- **Segment 2:** cycle \(>52\); 15,431 training rows.
+- Inputs include cycle, all three operating settings, and the sensor variables. The preprocessing pipeline standardizes the 24 operating-setting/sensor inputs and applies PCA. Constant inputs are retained in the declared input list but carry no varying signal: setting_3, sensor_1, sensor_5, sensor_10, sensor_16, sensor_18, and sensor_19.
+- The training PCA retains enough components to explain at least 90% of variance. The initial diagnostic reports **9 of 24 components** and **65.4%** explained by the first two PCs. The final fitted segment pipelines retain 12 PCs for Segment 1 and 9 PCs for Segment 2.
+- Both models are tuned with **30 Adaptive Greedy Search evaluations**. Validation uses engine-held-out pseudo-censor observations so an engine's rows do not cross the train/validation boundary.
+
+### PCA-XGBoost tuning and validation
+
+| Segment | Training rows | AGS evaluations | Best grouped pseudo-censor CV MAE | Grouped CV RMSE | Grouped CV R² |
+|---|---:|---:|---:|---:|---:|
+| Segment 1 (cycle \(\leq52\)) | 5,200 | 30 | 34.577 | 46.031 | 0.083 |
+| Segment 2 (cycle \(>52\)) | 15,431 | 30 | 18.867 | 27.015 | 0.655 |
+
+The final fitted pipelines retain 12 principal components for Segment 1 and 9 for Segment 2. Apparent training fit is more optimistic and is not the validation estimate:
+
+| Segment | Apparent train MAE | Apparent train RMSE | Apparent train R² |
+|---|---:|---:|---:|
+| Segment 1 | 33.007 | 43.927 | 0.179 |
+| Segment 2 | 21.653 | 31.167 | 0.698 |
+
+The grouped pseudo-censor evaluation contains 400 pseudo-censor rows and 100 held-out engines per segment. The test-set segment sizes are highly imbalanced:
+
+| Test segment | Test engines | MAE (cycles) | RMSE (cycles) | R² |
+|---|---:|---:|---:|---:|
+| Segment 1 (cycle \(\leq52\)) | 8 | 45.427 | 48.544 | -8.188 |
+| Segment 2 (cycle \(>52\)) | 92 | 15.902 | 22.557 | 0.699 |
+
+### Overall PCA-XGBoost test results
+
+| Metric | FD001 test result |
+|---|---:|
+| Test engines | 100 |
+| C-index | **0.839** |
+| MAE | **18.264 cycles** |
+| RMSE | **25.625 cycles** |
+| R² | **0.620** |
+| Median predicted RUL | 84.644 cycles |
+| Median actual RUL | 86.000 cycles |
+
+The aggregate MAE is lower than the earlier median-knot segmented XGBoost experiment (20.108 cycles), but this is not a controlled comparison: the segmentation threshold, feature representation, and tuning design differ. The early test segment has only eight engines and a strongly negative R², so its test estimate is particularly unstable. Most of the aggregate test performance comes from the later segment.
+
+### Residual diagnostics
+
+The notebook reports the following diagnostic tests:
+
+| Evaluation data | Shapiro residual p-value | Wilcoxon median-zero p-value | Spearman correlation of absolute error with prediction | Spearman p-value |
+|---|---:|---:|---:|---:|
+| Grouped training pseudo-censor OOF | 6.471 × 10⁻¹⁹ | 3.035 × 10⁻⁸ | 0.430 | 2.467 × 10⁻³⁷ |
+| Test engines | 0.0121 | 0.0004246 | 0.596 | 6.075 × 10⁻¹¹ |
+
+These diagnostics indicate non-normal residuals, evidence against a zero-centered residual distribution under the Wilcoxon test, and a positive association between prediction magnitude and absolute error. The OOF cutoffs share engines, as noted in the notebook; the diagnostics are descriptive and should not be treated as independent external validation.
+
+### PCA-XGBoost SHAP results
+
+Tree SHAP is calculated for each fitted segment pipeline. The top mean absolute SHAP values are:
+
+**Segment 1 (cycle \(\leq52\)):**
+
+| Transformed feature | Mean absolute SHAP |
+|---|---:|
+| cycle__cycle | 10.7310 |
+| pca__pca0 | 8.9748 |
+| pca__pca1 | 4.2570 |
+| pca__pca6 | 0.6652 |
+| pca__pca3 | 0.4632 |
+| pca__pca7 | 0.3639 |
+| pca__pca11 | 0.3524 |
+| pca__pca9 | 0.3517 |
+| pca__pca2 | 0.2293 |
+| pca__pca8 | 0.2224 |
+
+**Segment 2 (cycle \(>52\)):**
+
+| Transformed feature | Mean absolute SHAP |
+|---|---:|
+| pca__pca0 | 33.9528 |
+| cycle__cycle | 8.6709 |
+| pca__pca1 | 8.3360 |
+| pca__pca5 | 0.9035 |
+| pca__pca7 | 0.7690 |
+| pca__pca4 | 0.6537 |
+| pca__pca8 | 0.5977 |
+| pca__pca6 | 0.4637 |
+| pca__pca2 | 0.2731 |
+| pca__pca3 | 0.2322 |
+
+Cycle is the strongest attribution in the early model, followed by the first two principal components. In the later model, the first principal component dominates, with cycle and the second component next. PCA components are linear combinations of the standardized inputs; their SHAP values do not identify a single raw sensor or operating setting. These are model attributions, not causal effects.
+
 ## Interpretation and limitations
 
 - **FD001 only:** results do not establish performance on FD002–FD004 or a different fleet.
 - **One test cohort:** the same 100-engine test set is reused across experiments. Repeated model selection against the same test outcomes can make final reported performance optimistic.
+- **Latest PCA segment imbalance:** only 8 test engines fall in the early cycle-≤52 regime, versus 92 in the later regime. The early segment's MAE is 45.427 and R² is -8.188, so the overall PCA-XGBoost result should not hide the weak and unstable early-segment estimate.
+- **PCA interpretability:** SHAP values for PCA components attribute predictions to transformed components, which combine multiple standardized inputs; they cannot be read as the importance of one raw sensor.
 - **Engine dependence:** cycle rows are repeated observations. Random row-level splitting would leak engine-specific information; grouped splits and pseudo-censoring are used in the tuning workflows.
 - **Different feature timing:** initial survival models use cycle-1 baseline records with age-conditioned predictions; regressors use cycle-level targets and final-observed test rows. Their metrics are not a pure algorithm-only comparison.
 - **Pseudo-censor validation:** this approximates prediction from partial trajectories by selecting cutoffs within held-out engines; it is not an independent external validation cohort.
