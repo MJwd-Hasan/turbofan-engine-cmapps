@@ -2,7 +2,7 @@
 
 An exploratory and predictive analysis of turbofan engine degradation using the NASA C-MAPSS FD001 dataset. The notebook compares survival analysis, tree-based survival models, sensor reduction and clustering, gradient-boosting regressors, hyperparameter search, and SHAP-based explanations.
 
-> **Latest experiment:** The two-regime PCA-XGBoost experiment reports test MAE **18.264 cycles**, RMSE **25.625**, C-index **0.839**, and R² **0.620** on the 100 FD001 test engines. This improves on the earlier median-knot segmented XGBoost result (MAE 20.108), but the early regime contains only 8 test engines (MAE 45.427); the aggregate result is dominated by the 92 later-regime engines (MAE 15.902). Treat this as a promising FD001 experiment, not evidence of external generalization.
+> **Current segmented-regression protocol:** The segmented regression experiments use a fixed knot at the training-cycle-row median (**Q0.5 = cycle 104**): early cycles are \(\leq104\), late cycles \(>104\). Test engines are assigned using their last observed cycle. Updated model metrics, validation, diagnostics, and interpretation are in [segmented_regression_results.md](segmented_regression_results.md). The knot is fixed before test evaluation; it is not selected by test performance.
 
 ## Contents
 - Project overview
@@ -18,7 +18,7 @@ An exploratory and predictive analysis of turbofan engine degradation using the 
 
 The objective is to estimate the **remaining useful life (RUL)** of a turbofan engine from operating-cycle history and sensor measurements. The notebook treats degradation as both a time-to-failure/survival-analysis problem and a remaining-life regression problem. It also investigates sensor selection, dimensionality reduction, clustering, hyperparameter optimization, and model interpretability.
 
-The complete analysis, executed outputs, tables, plots, and discussion are in [findings.ipynb](findings.ipynb).
+The complete analysis, executed outputs, tables, plots, and discussion are in [fd001_trial.ipynb](fd001_trial.ipynb).
 
 ## Dataset
 
@@ -46,8 +46,8 @@ Each row has 26 columns: engine ID, cycle, three operational settings, and 21 se
 8. Remaining-life regression: XGBoost and LightGBM.
 9. Hyperparameter tuning: Optuna versus Adaptive Greedy Search (AGS), using engine-grouped pseudo-censor validation.
 10. SHAP-guided feature engineering: continuous high-ranking sensors plus quantile-binned sensors.
-11. Median-knot segmented regression: separate early- and late-cycle XGBoost models split at the median training cycle (104), with sensor-bin features and SHAP.
-12. Latest PCA-XGBoost experiment: two separate models split at the training-cycle 25th percentile (52), using operating settings and sensors transformed with training-fitted PCA, engine-grouped pseudo-censor validation, AGS tuning, residual diagnostics, and segment-specific SHAP.
+11. Q0.5 segmented regression: segment-specific XGBoost models with SHAP-screened and binned sensor features, PCA-XGBoost, LightGBM, and LSTM sequence models use the same training-cycle median knot (104).
+12. Regression-model validation and interpretation: engine-grouped pseudo-censor metrics, per-segment test outcomes, residual diagnostics, and model-specific SHAP or feature-importance summaries.
 
 ## Methodology
 
@@ -93,6 +93,18 @@ The tuning workflows use **GroupKFold** so that rows from one engine cannot appe
 - **Adaptive Greedy Search:** 30 evaluations initially; 50 evaluations in later experiments. The notebook supplies precomputed engine-disjoint validation splits because the AGS interface used does not accept a groups argument.
 
 Grouped pseudo-censor CV MAE is a validation estimate. Apparent in-sample training metrics are shown separately and are not treated as generalization estimates.
+
+### Median-knot segmented regression
+
+The segmented regression experiments use the median of the training cycle-row
+distribution (Q0.5, cycle 104) as a fixed knot. The early model handles cycle
+values \(\leq104\), and the late model handles values \(>104\). The knot is
+computed from training data only and reused unchanged for validation and test
+assignment. Models are fit separately by segment; validation folds keep engine
+IDs disjoint and evaluate pseudo-censor observations. The survival estimators
+remain in their original duration-based form: a cycle-knot regression split
+does not apply directly to those models' event-time or survival-function
+estimands.
 
 ### SHAP-guided feature engineering and segmentation
 
@@ -194,9 +206,9 @@ Kruskal–Wallis tests on engine-level baseline sensor bins:
 
 These sensors meet the exploratory unadjusted \(p<0.10\) threshold, but **neither passes 5% Benjamini–Hochberg FDR correction**. These are weak exploratory associations, not statistically confirmed sensor effects.
 
-### 6. Final segmented XGBoost experiment
+### 6. SHAP-feature segmented XGBoost reference
 
-The final experiment divides training rows at median cycle **104** and trains separate models:
+This earlier Q0.5 experiment divides training rows at median cycle **104** and trains separate models:
 
 | Segment | Training rows | Selected search method | Best grouped pseudo-censor CV MAE |
 |---|---:|---|---:|
@@ -212,7 +224,7 @@ Early Optuna (30.930) is marginally better than AGS (30.949); late AGS (19.227) 
 
 On the test set, 31 engines fall into the early segment and 69 into the late segment. Apparent in-sample segment MAEs (26.461 early; 17.428 late) are optimistic; grouped pseudo-censor validation MAEs (30.939 early; 19.236 late) are the more appropriate training validation summaries.
 
-This is the lowest test MAE reported in the notebook. It is a later modeling design with segment-specific predictors and tuning, and should be treated as a promising experiment requiring further validation—not a definitive generalization claim.
+This was the lowest test MAE among the earlier notebook experiments. The current Q0.5 comparison below adds fixed PCA-XGBoost, another grouped-CV-tuned PCA-XGBoost, LightGBM, and LSTM segment models; the fixed PCA-XGBoost's test MAE is 19.128 cycles. All scores are benchmark results requiring further validation, not definitive generalization claims.
 
 ## SHAP analysis
 
@@ -299,9 +311,63 @@ The largest attributions belong to sensor_14, sensor_12, and several one-hot cat
 
 The early model relies most strongly on cycle, while sensor_14 and sensor_12 dominate the late model's ranking. This shows different model-attribution patterns across the two fitted cycle regimes; it does not establish different causal degradation mechanisms.
 
-## Latest experiment: two-regime PCA-XGBoost
+## Current Q0.5 segmented-regression results
 
-This is the final experiment in the current notebook and should be distinguished from the earlier median-cycle segmented model above. It uses a fixed threshold equal to the **25th percentile of training cycle values (52 cycles)**, then fits one XGBoost model for each regime:
+The current regression experiments use the training-cycle-row median as a
+fixed knot (**Q0.5 = cycle 104**). Cycles \(\leq104\) are the early segment;
+cycles \(>104\) are the late segment. The split is calculated from training
+data, and test engines are routed using their last observed cycle. This is a
+fixed design choice, not a knot selected against the test set.
+
+| Segmented model | Test C-index | Test MAE (cycles) | Test RMSE (cycles) | Test R-squared |
+|---|---:|---:|---:|---:|
+| SHAP-screened XGBoost with sensor bins | 0.830 | 20.108 | 26.310 | Not reported |
+| Fixed-Q0.5 PCA-XGBoost | **0.836** | **19.128** | 26.404 | 0.596 |
+| Grouped-CV-tuned Q0.5 PCA-XGBoost | 0.830 | 19.844 | **26.262** | **0.601** |
+| Fixed-parameter Q0.5 LightGBM | **0.836** | 20.736 | 27.880 | 0.550 |
+| SHAP-informed Q0.5 LSTM | 0.826 | 22.349 | 29.437 | 0.498 |
+
+The fixed-Q0.5 PCA-XGBoost has the lowest test MAE; the second PCA-XGBoost
+pipeline has the lowest RMSE and highest R-squared. LightGBM ties the highest
+C-index. The rankings are metric-dependent and the two PCA-XGBoost pipelines
+use different validation/training designs, so they are not a controlled
+head-to-head comparison.
+
+The training split contains 10,400 early and 10,231 late rows. The test set
+contains 31 early and 69 late engines. In the fixed PCA-XGBoost pipeline,
+early/late test MAE is 31.593/13.528 cycles; in segmented LightGBM it is
+34.440/14.579 cycles. Their early-segment R-squared values are -2.785 and
+-3.363, respectively. The aggregate scores therefore conceal difficulty in
+the early regime.
+
+Earlier unsegmented booster and tuning experiments remain as reference
+baselines; the Q0.5 experiments provide segmented counterparts for the
+regression model families. The change is a fixed-knot modeling procedure, not
+a theorem-based performance guarantee or a claim of a true degradation
+change point.
+
+Validation uses engine-grouped pseudo-censor observations, with preprocessing
+fit on training-fold engines. The fixed-knot validation reports performance
+at Q0.5; it does not search for a different knot. PCA-XGBoost uses segment
+specific PCA and AGS tuning; LightGBM uses fixed parameters and gain-based
+feature importance; LSTM uses 15-cycle sequences, segment-specific
+tree-surrogate SHAP input screening, and an engine-disjoint 80/20
+train/validation split.
+
+The log-logistic, Cox, Kaplan-Meier, Nelson-Aalen, and random-survival-forest
+analyses remain duration-based. The cycle-knot regression method is not a
+direct replacement for their survival-function or hazard estimands, so these
+survival models are not segmented using this knot. Full per-segment outcomes,
+validation, residual diagnostics, parameters, importance, and limitations are
+in [segmented_regression_results.md](segmented_regression_results.md).
+
+## Historical Q0.25 PCA-XGBoost experiment
+
+The following results are retained as a historical comparison from an earlier
+notebook run. Its **Q0.25 (cycle 52)** split is not the current protocol, and
+its test metrics should not be read as the updated Q0.5 results.
+
+This earlier experiment fit one XGBoost model for each regime:
 
 - **Segment 1:** cycle \(\leq52\); 5,200 training rows.
 - **Segment 2:** cycle \(>52\); 15,431 training rows.
@@ -395,7 +461,7 @@ Cycle is the strongest attribution in the early model, followed by the first two
 
 - **FD001 only:** results do not establish performance on FD002–FD004 or a different fleet.
 - **One test cohort:** the same 100-engine test set is reused across experiments. Repeated model selection against the same test outcomes can make final reported performance optimistic.
-- **Latest PCA segment imbalance:** only 8 test engines fall in the early cycle-≤52 regime, versus 92 in the later regime. The early segment's MAE is 45.427 and R² is -8.188, so the overall PCA-XGBoost result should not hide the weak and unstable early-segment estimate.
+- **Q0.5 segment imbalance:** 31 test engines fall in the early cycle-≤104 regime, versus 69 in the later regime. The fixed PCA-XGBoost and LightGBM have negative early-segment R-squared; segment and aggregate metrics should be read together.
 - **PCA interpretability:** SHAP values for PCA components attribute predictions to transformed components, which combine multiple standardized inputs; they cannot be read as the importance of one raw sensor.
 - **Engine dependence:** cycle rows are repeated observations. Random row-level splitting would leak engine-specific information; grouped splits and pseudo-censoring are used in the tuning workflows.
 - **Different feature timing:** initial survival models use cycle-1 baseline records with age-conditioned predictions; regressors use cycle-level targets and final-observed test rows. Their metrics are not a pure algorithm-only comparison.
@@ -420,24 +486,25 @@ Python packages used:
 - optuna
 - shap
 - ags (Adaptive Greedy Search)
+- torch (for the LSTM experiment)
 
 Install the general dependencies with pip, then install scikit-survival using its platform-specific installation instructions:
 
 ```bash
-pip install numpy pandas scipy matplotlib scikit-learn lifelines xgboost lightgbm optuna shap ags
+pip install numpy pandas scipy matplotlib scikit-learn lifelines xgboost lightgbm optuna shap ags torch
 ```
 
 Run the notebook:
 
 ```bash
-jupyter notebook findings.ipynb
+jupyter notebook fd001_trial.ipynb
 ```
 
 The notebook contains executed outputs, but reproducing the experiments requires the data files and dependencies above. Some cells rerun hyperparameter searches (30 or 50 trials/evaluations) and may take time.
 
 ## Repository files
 
-- findings.ipynb — analysis, experiments, evaluation outputs, plots, and SHAP explanations.
+- fd001_trial.ipynb — analysis, experiments, evaluation outputs, plots, and SHAP explanations.
 - CMAPSSData/ — dataset files used by the project; the FD001 workflows read train_FD001.txt, test_FD001.txt, and RUL_FD001.txt.
 
 ---

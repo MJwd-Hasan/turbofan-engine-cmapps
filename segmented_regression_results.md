@@ -1,254 +1,331 @@
-# FD001 Segmented Regression Results
+# FD001 Q0.5 Segmented Regression Results
 
 ## Executive summary
 
-This report documents the FD001 knot-selection, segmented PCA-XGBoost, and
-SHAP-informed segmented LSTM experiments in [`findings.ipynb`](./findings.ipynb).
-The selected split point was cycle **124**. It was chosen using engine-grouped
-pseudo-censor validation on training data only, from seven candidate cycle
-quantiles between 0.20 and 0.80.
+The segmented regression experiments now use one fixed knot: the median
+(Q0.5) of training cycle-row values, **cycle 104**. Rows at cycle 104 are
+assigned to the early segment; rows after 104 are assigned to the late
+segment. The knot is calculated from training data and is not selected using
+test outcomes.
 
-On the supplied 100-engine test set, the segmented LSTM had the lowest error
-(MAE 19.178 cycles, RMSE 26.162 cycles) and the higher R-squared (0.604).
-Segmented PCA-XGBoost had MAE 20.045, RMSE 26.803, and R-squared 0.584. The
-earlier fixed-Q0.25 PCA-XGBoost model scored MAE 18.264 and RMSE 25.625 on the
-same test set; therefore, selecting a knot by grouped pseudo-censor MAE did
-**not** improve test-set point accuracy over that earlier baseline. These are
-results on this supplied test set, not a guarantee of future performance.
+The best test MAE among the reported segmented regressors is **19.128
+cycles**, from the fixed-Q0.5 PCA-XGBoost pipeline. A second PCA-XGBoost
+pipeline has the lowest RMSE (**26.262**) and highest R-squared (**0.601**).
+The SHAP-screened XGBoost, segmented LightGBM, and segmented LSTM provide
+additional Q0.5 comparisons. These rankings vary by metric and are descriptive
+results on the supplied 100-engine FD001 test set, not evidence of external
+generalization or a biological change point.
 
-## Data and prediction target
-
-- **Training data:** `train_FD001.txt`, 20,631 engine-cycle observations from
-  100 engines.
-- **Test data:** `test_FD001.txt`, one last-observed feature row for each of 100
-  engines.
-- **Reference outcomes:** `RUL_FD001.txt`, the supplied remaining useful life
-  for each test engine.
-- **Response:** remaining useful life in cycles. At training cycle \(t\), the
-  target is the engine's training failure cycle minus \(t\). For the test
-  evaluation, predictions at the last observed test cycle are compared to the
-  provided RUL labels.
-- **Segmentation:** early segment is cycle \(\leq 124\); late segment is cycle
-  \(>124\). The segment for a test engine is determined by its last observed
-  cycle.
-
-The original records are repeated measurements within engines, not independent
-engines. Accordingly, knot selection and model tuning use engine-grouped
-validation where described below.
-
-## Predictors and preprocessing
-
-The predictors include cycle, varying operating settings, and varying sensors.
-The PCA preprocessing screened the following 17 nonconstant setting/sensor
-variables: `setting_1`, `setting_2`, `sensor_2`, `sensor_3`, `sensor_4`,
-`sensor_6`, `sensor_7`, `sensor_8`, `sensor_9`, `sensor_11`, `sensor_12`,
-`sensor_13`, `sensor_14`, `sensor_15`, `sensor_17`, `sensor_20`, and
-`sensor_21`. Constant variables, including `setting_3`, do not carry
-within-training variation and are excluded from PCA. Scaling and PCA are fit
-within the training partition at each validation step; test rows are
-transformed using the corresponding fitted preprocessing.
-
-The final segment-specific PCA-XGBoost pipelines retain enough principal
-components to explain at least 90% of segment training variance: 11 components
-in the early segment and 9 in the late segment. Tree SHAP is computed for the
-fitted XGBoost models on their PCA-transformed features. Consequently, those
-attributions refer to principal components rather than being direct,
-one-to-one SHAP attributions for original sensor columns.
-
-For the LSTM, separate tree-surrogate XGBoost SHAP screenings on original
-nonconstant measurements selected the top eight setting/sensor explanatory
-variables per segment. Cycle is also included in the sequence input. The
-selected variables were:
-
-| Segment | Top-eight SHAP-screened variables |
-|---|---|
-| Early, cycle \(\leq124\) | `sensor_14`, `sensor_11`, `sensor_9`, `sensor_4`, `sensor_12`, `sensor_15`, `sensor_21`, `sensor_8` |
-| Late, cycle \(>124\) | `sensor_11`, `sensor_9`, `sensor_4`, `sensor_14`, `sensor_12`, `sensor_15`, `sensor_7`, `sensor_20` |
-
-These are model-based screening results, not causal effects. SHAP is used here
-to select LSTM inputs; the SHAP values shown are from the surrogate tree model,
-not explanations of the LSTM itself.
-
-## Knot selection
-
-Candidate knots were the 0.20, 0.30, ..., 0.80 quantiles of training cycle-row
-values. For each candidate, the training engines were split into three groups.
-Within each fold, the preprocessing and segment models were fit using only the
-training engines. Validation used pseudo-censor observations: each held-out
-engine contributed several truncated trajectories, with remaining-life labels
-calculated at the corresponding cutoff. The selection objective was pooled
-MAE over the held-out pseudo-censor rows. Fixed XGBoost settings were used for
-this knot search, so the knot criterion was not confounded by running a new
-hyperparameter search for each candidate.
-
-| Candidate cycle | Training cycle-row quantile | Grouped validation MAE | Grouped validation RMSE |
-|---:|---:|---:|---:|
-| 42 | 0.204 | 23.912 | 32.657 |
-| 62 | 0.301 | 23.635 | 32.680 |
-| 83 | 0.402 | 23.849 | 32.903 |
-| 104 | 0.504 | 23.634 | 32.752 |
-| **124** | **0.601** | **23.590** | **32.767** |
-| 145 | 0.701 | 23.859 | 32.873 |
-| 169 | 0.803 | 23.953 | 32.942 |
-
-The knot is **124 cycles**, the best MAE among this finite grid. It is not
-proof of a globally optimal biological change point: the search is limited to
-the candidate grid and depends on this pseudo-censor scoring design.
-
-![Engine-grouped knot-selection validation](./images/knot_optimization.png)
-
-## Segmented PCA-XGBoost
-
-Separate XGBoost regressors were fit for the two knot-defined segments. Each
-segment used its own scaler/PCA transform, retaining at least 90% explained
-variance, and 30 Adaptive Greedy Search (AGS) evaluations to minimize
-engine-grouped pseudo-censor validation MAE. Final segment models were then fit
-on the corresponding full segment training rows.
-
-| Segment | Training rows | Test engines | PCA components | Best grouped-validation MAE |
+| Model | Test C-index | Test MAE | Test RMSE | Test R-squared |
 |---|---:|---:|---:|---:|
-| Early, cycle \(\leq124\) | 12,400 | 41 | 11 | 30.734 |
-| Late, cycle \(>124\) | 8,231 | 59 | 9 | 14.263 |
+| SHAP-screened, binned-sensor XGBoost | 0.830 | 20.108 | 26.310 | Not reported |
+| Fixed-Q0.5 PCA-XGBoost | **0.836** | **19.128** | 26.404 | 0.596 |
+| Grouped-CV-tuned Q0.5 PCA-XGBoost | 0.830 | 19.844 | **26.262** | **0.601** |
+| Fixed-parameter Q0.5 LightGBM | **0.836** | 20.736 | 27.880 | 0.550 |
+| SHAP-informed Q0.5 LSTM | 0.826 | 22.349 | 29.437 | 0.498 |
 
-The early segment's best AGS parameters were 100 estimators, depth 4, learning
-rate 0.04, minimum child weight 1, subsample 0.85, column subsample 0.65,
-L2 regularization 0.1, and gamma 0.75. The late segment's were 100 estimators,
-depth 5, learning rate 0.15, minimum child weight 2, subsample 0.85, column
-subsample 0.65, L2 regularization 2.0, and gamma 3.0.
+## Data, target, and segmentation
 
-### XGBoost performance
+- **Training data:** `train_FD001.txt`, 20,631 cycle rows from 100 engines.
+- **Test data:** `test_FD001.txt`, partial trajectories for 100 engines.
+- **Test outcomes:** `RUL_FD001.txt`, one remaining-life label per test engine.
+- **Training response:** for engine \(i\), let \(T_i\) be its final training
+  cycle. At cycle \(t\), the response is \(T_i-t\).
+- **Test evaluation:** one prediction per engine, made from its last observed
+  test row and compared with the supplied RUL label.
+- **Fixed knot:** `train_rows["cycle"].quantile(0.5)` is cycle 104.
+- **Segment assignment:** early is cycle \(\leq104\), late is cycle \(>104\).
+  Test engines are assigned by their last observed cycle.
 
-| Evaluation set | Segment | Rows | MAE | RMSE | R-squared |
-|---|---|---:|---:|---:|---:|
-| Apparent training fit (optimistic) | Early | 12,400 | 30.845 | 41.132 | 0.503 |
-| Apparent training fit (optimistic) | Late | 8,231 | 11.299 | 16.897 | 0.847 |
-| Engine-held-out pseudo-censor OOF | Early | 332 | 30.784 | 38.917 | 0.333 |
-| Engine-held-out pseudo-censor OOF | Late | 268 | 14.267 | 23.208 | 0.660 |
+The median value is cycle 104; because cycle is discrete and many rows share
+the knot, 10,400 training rows (about 50.4%) fall at or below it and 10,231
+fall above it. The test set has 31 early-segment engines and 69 late-segment
+engines. This is a fixed median split, not a search for an optimal change
+point.
 
-| FD001 test metric | Result |
-|---|---:|
-| Engines | 100 |
-| C-index | 0.832 |
-| MAE | 20.045 cycles |
-| RMSE | 26.803 cycles |
-| R-squared | 0.584 |
-| Median predicted RUL | 81.261 cycles |
-| Median actual RUL | 86 cycles |
+## Methodology and validation
 
-The lower early-segment validation accuracy compared with the late segment
-indicates that short-cycle trajectories are harder to predict under this
-setup. Apparent training metrics are included as fit diagnostics and are
-optimistic; engine-held-out pseudo-censor metrics better indicate
-generalization to unseen engines. The following diagnostics are descriptive and were not used as model-selection
-criteria:
+The training observations are repeated measurements within engines, not
+independent samples. Where validation is reported, `GroupKFold` keeps each
+engine entirely in one fold. Pseudo-censor validation selects intermediate
+cycles from held-out training engines and evaluates RUL at those cutoffs.
+Preprocessing and segment models are fit using training-fold engines only.
+Apparent training fit is reported separately and is optimistic.
 
-| Evaluation set | Shapiro residual normality p-value | Wilcoxon signed-error median-zero p-value | Spearman correlation of absolute error with prediction |
-|---|---:|---:|---:|
-| Engine-held-out pseudo-censor OOF | 1.623e-14 | 1.757e-14 | 0.5297 |
-| Test engines | 0.3323 | 0.000608 | 0.5808 |
+The knot-validation cell evaluates the fixed Q0.5 split with three
+engine-grouped folds; it does not compare or select candidate knots. Across
+the folds it evaluates 600 pseudo-censor rows, with fold MAEs **21.048**,
+**25.342**, and **24.458** cycles. Pooled MAE is **23.634** and pooled RMSE is
+**32.752** cycles.
 
-The OOF residuals depart from normality under the Shapiro test; the test-set
-Shapiro test does not reject normality at the 0.05 level. Signed-error tests
-indicate a nonzero median error in both sets, and absolute error is positively
-associated with predictions in both sets. None of these tests is an
-XGBoost assumption or a substitute for checking practical error size.
+### Model designs
 
-The survival comparison figures show empirical survival curves of the
-100-engine test RUL distributions (actual labels versus predictions); they
-summarize the distributions and are not individual engine survival forecasts.
+1. **SHAP-screened XGBoost:** separate early/late models with cycle, five
+   numeric SHAP-selected sensors, and binned `sensor_7` and `sensor_13`.
+   Fifty Optuna trials and 50 Adaptive Greedy Search evaluations were compared
+   per segment; the selected method was Optuna early and AGS late. The
+   unadjusted sensor screening threshold was \(p<0.10\); neither additional
+   sensor passed 5% Benjamini-Hochberg FDR correction.
+2. **Fixed-Q0.5 PCA-XGBoost:** separate PCA preprocessing and XGBoost models
+   use cycle plus varying settings/sensors. Each segment uses 30 AGS
+   evaluations. The models retain 12 early and 9 late principal components
+   for at least 90% explained training variance.
+3. **Grouped-CV-tuned Q0.5 PCA-XGBoost:** a second PCA-XGBoost pipeline also
+   fits separate segment models and uses 30 AGS evaluations per segment. Its
+   fold and pseudo-censor construction differ from the fixed-threshold
+   pipeline, so its metrics are not a controlled comparison with that model.
+4. **Fixed-parameter Q0.5 LightGBM:** separate models use cycle and all
+   varying settings/sensors. Each has 300 estimators, learning rate 0.05,
+   31 leaves, row and feature subsampling of 0.85, and L2 regularization 1.0.
+   Three-fold engine-grouped pseudo-censor validation is used; there is no
+   hyperparameter search. Reported LightGBM importances are gain-based, not
+   SHAP.
+5. **SHAP-informed Q0.5 LSTM:** segment-specific 15-cycle sequences, with
+   eight sensor inputs selected per segment by a tree-surrogate SHAP screen.
+   Eighty engines are used for training and 20 engine-disjoint engines for
+   validation; early stopping selects the epoch separately for each segment.
+   Target RUL is standardized during training and predictions are returned to
+   cycles.
 
-![XGBoost test survival comparison](./images/optimized_knot_xgb_survival.png)
+The earlier single-model booster benchmarks remain in the notebook as
+unsegmented references; the Q0.5 experiments above provide segmented
+counterparts for the regression model families. The survival estimators are
+handled separately below because their event-time estimands are not segmented
+regressions.
 
-![XGBoost prediction and residual diagnostics](./images/optimized_knot_xgb_diagnostics.png)
+## Results by model
 
-![XGBoost AGS tuning history](./images/optimized_knot_xgb_ags_history.png)
+### 1. SHAP-screened XGBoost
 
-![XGBoost early-segment SHAP summary](./images/optimized_knot_xgb_shap_early.png)
+| Segment | Training rows | Apparent train MAE | Grouped pseudo-censor CV MAE | Grouped CV RMSE |
+|---|---:|---:|---:|---:|
+| Early, cycle \(\leq104\) | 10,400 | 26.461 | 30.939 | 39.580 |
+| Late, cycle \(>104\) | 10,231 | 17.428 | 19.236 | 26.591 |
 
-![XGBoost late-segment SHAP summary](./images/optimized_knot_xgb_shap_late.png)
-
-![XGBoost early-segment SHAP importance](./images/optimized_knot_xgb_shap_bar_early.png)
-
-![XGBoost late-segment SHAP importance](./images/optimized_knot_xgb_shap_bar_late.png)
-
-## Segmented SHAP-informed LSTM
-
-The LSTM uses sliding sequences of length 15 and the segment-specific top-eight
-SHAP-screened variables listed above, together with cycle. Training engines
-were separated into 80 training engines and 20 validation engines; no engine
-was shared across these partitions. Validation uses held-out pseudo-censor
-windows. Target RUL was standardized for optimization, then predictions were
-returned to cycle units. The segment models used early stopping (patience 8)
-and selected epochs 9 (early) and 8 (late). Each segment's best epoch was
-selected using its held-out validation partition before final training.
-
-| Segment | Training rows | Best epoch | Apparent train MAE | Apparent train RMSE | Held-out validation rows / engines | Validation MAE | Validation RMSE | Validation R-squared |
+| Evaluation cohort | C-index | Dynamic AUC | MAE | RMSE | IAE | ISE | Median predicted RUL | Median actual RUL |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Early, cycle \(\leq124\) | 12,400 | 9 | 31.288 | 41.529 | 43 / 20 | 27.057 | 31.659 | 0.583 |
-| Late, cycle \(>124\) | 8,231 | 8 | 14.348 | 22.109 | 37 / 19 | 11.425 | 18.078 | 0.724 |
+| Grouped pseudo-censor validation | 0.804 | 0.847 | 24.941 | 33.557 | 3.531 | 0.114 | 101.481 | 90.000 |
+| FD001 test set | 0.830 | 0.924 | 20.108 | 26.310 | 6.421 | 0.465 | 81.703 | 86.000 |
 
-| FD001 test metric | Result |
+Test engines per segment are 31 early and 69 late. AIC/BIC are not defined for
+these separate XGBoost prediction fits.
+
+Top mean absolute SHAP attributions for the original/binned features:
+
+| Rank | Early feature | Mean \(|SHAP|\) | Late feature | Mean \(|SHAP|\) |
+|---:|---|---:|---|---:|
+| 1 | cycle | 18.2667 | sensor_14 | 9.5246 |
+| 2 | sensor_14 | 5.2856 | sensor_12 | 8.7029 |
+| 3 | sensor_8 | 4.4694 | sensor_8 | 4.5802 |
+| 4 | sensor_12 | 4.1339 | sensor_2 | 3.9526 |
+| 5 | sensor_2 | 3.0765 | sensor_3 | 3.3491 |
+
+### 2. Fixed-Q0.5 PCA-XGBoost
+
+| Segment | Train rows | PCA components | Apparent train MAE | Grouped CV rows | Grouped CV MAE | Grouped CV RMSE | Grouped CV R-squared |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Early, cycle \(\leq104\) | 10,400 | 12 | 31.995 | 400 | 33.354 | 44.053 | 0.326 |
+| Late, cycle \(>104\) | 10,231 | 9 | 15.617 | 400 | 12.705 | 20.053 | 0.663 |
+
+| Test segment | Engines | MAE | RMSE | R-squared |
+|---|---:|---:|---:|---:|
+| Early, cycle \(\leq104\) | 31 | 31.593 | 37.357 | -2.785 |
+| Late, cycle \(>104\) | 69 | 13.528 | 19.580 | 0.746 |
+
+| Overall test metric | Result |
 |---|---:|
-| Engines | 100 |
 | C-index | 0.836 |
-| MAE | 19.178 cycles |
-| RMSE | 26.162 cycles |
-| R-squared | 0.604 |
-| Median predicted RUL | 79.891 cycles |
+| MAE | 19.128 cycles |
+| RMSE | 26.404 cycles |
+| R-squared | 0.596 |
+| Median predicted RUL | 79.206 cycles |
 | Median actual RUL | 86 cycles |
 
-The validation and test MAE are both lower than the corresponding XGBoost
-results, while the test C-index is 0.004 higher. Test residual normality
-diagnostic Shapiro p=0.07097 (validation p=0.04438) is descriptive only; normal
-residuals are not required for this LSTM. Per-segment validation sample sizes
-are modest, so performance differences should not be overinterpreted.
+Best AGS parameters:
 
-![LSTM training and validation history](./images/segmented_lstm_training.png)
+- **Early:** 140 estimators, depth 2, learning rate 0.10, minimum child weight
+  10, subsample 0.85, column subsample 0.85, L2 regularization 20.0, gamma
+  0.25.
+- **Late:** 180 estimators, depth 5, learning rate 0.025, minimum child weight
+  1, subsample 0.65, column subsample 1.0, L2 regularization 0.5, gamma 3.0.
 
-![LSTM test survival comparison](./images/segmented_lstm_survival.png)
+Residual diagnostics (descriptive):
 
-![LSTM test prediction and residual diagnostics](./images/segmented_lstm_diagnostics.png)
+| Evaluation data | Shapiro p-value | Wilcoxon median-zero p-value | Spearman \(|error|\)-prediction rho | Spearman p-value |
+|---|---:|---:|---:|---:|
+| Grouped pseudo-censor OOF | 2.481e-21 | 7.193e-11 | 0.5782 | 1.485e-72 |
+| Test engines | 0.05576 | 0.001579 | 0.5889 | 1.163e-10 |
 
-![Tree-surrogate SHAP feature screening for LSTM](./images/segmented_lstm_shap_selection.png)
+The early test-segment R-squared is strongly negative, while the late-segment
+score is positive. Aggregate test metrics therefore conceal a substantial
+early-regime weakness.
 
-## Model comparison
+Top mean absolute Tree SHAP values are cycle (21.8795), `pca__pca0` (12.7419),
+and `pca__pca1` (5.9255) early; `pca__pca0` (28.3560), `pca__pca1` (11.0057),
+and cycle (1.8835) late. These PCA-component attributions do not map
+one-to-one to original sensors.
 
-All rows below use the same supplied FD001 test set of 100 engines. Lower MAE
-and RMSE are better; higher C-index and R-squared are better. The fixed-Q0.25
-metrics are from the preceding notebook experiment, not a separately rerun
-validation benchmark.
+### 3. Grouped-CV-tuned Q0.5 PCA-XGBoost
 
-| Model | Segmentation | C-index | MAE (cycles) | RMSE (cycles) | R-squared |
-|---|---|---:|---:|---:|---:|
-| Earlier PCA-XGBoost + AGS | Fixed Q0.25, cycle 52 | 0.839 | **18.264** | **25.625** | 0.620 |
-| PCA-XGBoost + AGS + Tree SHAP | Selected knot, cycle 124 | 0.832 | 20.045 | 26.803 | 0.584 |
-| SHAP-informed segmented LSTM | Selected knot, cycle 124 | **0.836** | 19.178 | 26.162 | **0.604** |
+| Segment | Train rows | PCA components | Best AGS grouped MAE | OOF rows | OOF MAE | OOF RMSE | OOF R-squared |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Early, cycle \(\leq104\) | 10,400 | 12 | 31.450 | 275 | 31.486 | 39.702 | 0.190 |
+| Late, cycle \(>104\) | 10,231 | 9 | 16.871 | 325 | 16.876 | 25.267 | 0.651 |
 
-The LSTM improves over the optimized-knot XGBoost in these test metrics, but
-neither new model improves on the prior fixed-Q0.25 model's MAE, RMSE, or
-C-index. Thus, knot optimization did not translate to test improvement in this
-comparison. This does not invalidate the knot-selection procedure; it shows
-the training-only pseudo-censor criterion did not pick the best test-set
-scoring split among all approaches examined.
+| Overall test metric | Result |
+|---|---:|
+| C-index | 0.830 |
+| MAE | 19.844 cycles |
+| RMSE | 26.262 cycles |
+| R-squared | 0.601 |
+| Median predicted RUL | 81.041 cycles |
+| Median actual RUL | 86 cycles |
 
-## Limitations and interpretation
+There were 31 early and 69 late test engines. Apparent training MAE/RMSE were
+32.269/42.958 early and 17.640/25.611 late; these are in-sample fit
+diagnostics, not validation estimates. Best AGS parameters:
 
-1. The supplied test set contains 100 engines from the same benchmark subset;
-   this is not external or prospective validation.
-2. The selected knot is the minimum over seven candidate quantiles and the
-   specified pseudo-censor CV protocol. A different candidate grid or
-   validation construction could select a different knot.
-3. Training cycle rows are repeated within engines. The effective independent
-   units are engines, not the 20,631 rows; grouped validation addresses this
-   for tuning, while apparent in-sample fit is explicitly labeled optimistic.
-4. The test-label metrics are reported after model selection and should be
-   treated as descriptive benchmark results, not an unbiased estimate of
-   performance after repeated experimentation.
-5. SHAP indicates predictive attribution, not causal sensor effects. XGBoost
-   SHAP for the PCA model is on components; LSTM inputs were selected using a
-   separate tree surrogate.
-6. This is a regression comparison. AIC/BIC are not appropriate for these
-   XGBoost and LSTM prediction fits. C-index summarizes ranking, while MAE,
-   RMSE, and R-squared summarize errors on the provided RUL labels.
-7. No imputation, additional latent-factor model, or external statistical
-   theorem was added as part of these experiments.
+- **Early:** 220 estimators, depth 2, learning rate 0.025, minimum child weight
+  1, subsample 0.75, column subsample 1.0, L2 regularization 10.0, gamma 1.5.
+- **Late:** 140 estimators, depth 2, learning rate 0.06, minimum child weight
+  4, subsample 1.0, column subsample 0.85, L2 regularization 0.1, gamma 1.5.
+
+| Evaluation data | Shapiro p-value | Wilcoxon median-zero p-value | Spearman \(|error|\)-prediction rho |
+|---|---:|---:|---:|
+| Grouped pseudo-censor OOF | 1.69e-14 | 8.284e-14 | 0.4982 |
+| Test engines | 0.3421 | 0.0003826 | 0.5707 |
+
+### 4. Fixed-parameter Q0.5 LightGBM
+
+| Segment | Pseudo-censor validation rows | Validation MAE | Validation RMSE | Validation R-squared |
+|---|---:|---:|---:|---:|
+| Early, cycle \(\leq104\) | 167 | 34.571 | 42.043 | -0.187 |
+| Late, cycle \(>104\) | 233 | 18.219 | 27.999 | 0.529 |
+
+| Test segment | Engines | MAE | RMSE | R-squared |
+|---|---:|---:|---:|---:|
+| Early, cycle \(\leq104\) | 31 | 34.440 | 40.109 | -3.363 |
+| Late, cycle \(>104\) | 69 | 14.579 | 20.093 | 0.733 |
+
+| Overall test metric | Result |
+|---|---:|
+| C-index | 0.836 |
+| MAE | 20.736 cycles |
+| RMSE | 27.880 cycles |
+| R-squared | 0.550 |
+| Median predicted RUL | 79.208 cycles |
+| Median actual RUL | 86 cycles |
+
+Test residual diagnostics are Shapiro p=0.09165, Wilcoxon median-zero
+p=0.001, and Spearman correlation between absolute error and prediction
+\(\rho=0.6571\). These are descriptive tests, not LightGBM assumptions.
+
+Top gain importances (not SHAP):
+
+| Rank | Early feature | Early gain | Late feature | Late gain |
+|---:|---|---:|---|---:|
+| 1 | cycle | 92,361,801.484 | sensor_11 | 72,262,855.468 |
+| 2 | sensor_11 | 18,523,064.596 | sensor_4 | 29,689,720.418 |
+| 3 | sensor_12 | 10,565,659.567 | sensor_9 | 19,512,126.515 |
+| 4 | sensor_14 | 9,649,813.792 | sensor_12 | 16,454,406.319 |
+| 5 | sensor_4 | 9,552,901.909 | sensor_14 | 10,325,408.611 |
+| 6 | sensor_9 | 9,017,698.696 | sensor_7 | 9,424,791.154 |
+| 7 | sensor_15 | 7,245,519.830 | sensor_15 | 9,399,945.678 |
+| 8 | sensor_7 | 7,073,390.676 | sensor_21 | 4,120,117.135 |
+| 9 | sensor_21 | 6,467,498.810 | sensor_2 | 4,036,315.940 |
+| 10 | sensor_3 | 5,837,791.926 | sensor_8 | 3,829,661.264 |
+
+### 5. SHAP-informed Q0.5 LSTM
+
+| Segment | Training rows | Best epoch | Apparent train MAE | Validation rows / engines | Validation MAE | Validation RMSE | Validation R-squared |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Early, cycle \(\leq104\) | 10,400 | 5 | 32.526 | 33 / 20 | 28.530 | 34.509 | 0.368 |
+| Late, cycle \(>104\) | 10,231 | 21 | 14.869 | 47 / 20 | 10.207 | 14.780 | 0.841 |
+
+| Overall test metric | Result |
+|---|---:|
+| C-index | 0.826 |
+| MAE | 22.349 cycles |
+| RMSE | 29.437 cycles |
+| R-squared | 0.498 |
+| Median predicted RUL | 74.462 cycles |
+| Median actual RUL | 86 cycles |
+
+There were 31 early and 69 late test engines. Test residual Shapiro p=0.3768;
+held-out validation residual Shapiro p=0.003584. Normal residuals are not
+required for an LSTM.
+
+The segment-specific SHAP-screened sensor inputs and mean absolute surrogate
+Tree SHAP values were:
+
+| Rank | Early sensor | Early mean \(|SHAP|\) | Late sensor | Late mean \(|SHAP|\) |
+|---:|---|---:|---|---:|
+| 1 | `sensor_14` | 6.6709 | `sensor_11` | 9.3357 |
+| 2 | `sensor_11` | 5.9450 | `sensor_9` | 6.5954 |
+| 3 | `sensor_9` | 5.0966 | `sensor_4` | 6.4218 |
+| 4 | `sensor_4` | 2.9257 | `sensor_14` | 4.9421 |
+| 5 | `sensor_12` | 2.7188 | `sensor_12` | 3.9809 |
+| 6 | `sensor_21` | 2.5460 | `sensor_7` | 3.6154 |
+| 7 | `sensor_15` | 2.3799 | `sensor_15` | 3.0890 |
+| 8 | `sensor_2` | 1.8434 | `sensor_20` | 2.4037 |
+
+These are selections from tree-surrogate SHAP rankings, not direct LSTM
+explanations or causal effects.
+
+## Interpretation and limitations
+
+- **Metric-dependent ranking:** fixed-Q0.5 PCA-XGBoost has the lowest test
+  MAE; the grouped-CV-tuned PCA-XGBoost has the lowest RMSE and highest
+  R-squared. LightGBM ties the highest C-index. No model is best on every
+  reported metric.
+- **Early-regime difficulty:** the test set has only 31 early-segment engines.
+  The fixed PCA-XGBoost and LightGBM have negative early-segment R-squared,
+  meaning their predictions are worse than using the early-segment test mean
+  as a predictor. Segment-specific test estimates should be interpreted with
+  caution.
+- **Fixed knot, not a discovered change point:** Q0.5 is a design choice from
+  the training cycle-row distribution. Validation scores do not prove a
+  biological transition at cycle 104.
+- **No theorem-based guarantee:** the implementation applies a fixed-knot
+  segmented-regression modeling procedure; it does not claim a separate
+  statistical theorem guarantees better prediction or a true change point.
+- **Engine dependence:** cycle rows are repeated measurements. Grouped
+  validation avoids engine overlap, but pseudo-censor cutoffs from one engine
+  are still correlated observations; row counts are not independent sample
+  sizes.
+- **Test-set reuse:** the same 100 test engines have been used across multiple
+  experiments. Reported test metrics are descriptive and may be optimistic
+  after repeated model development.
+- **Survival models:** the log-logistic, Cox, Kaplan-Meier, Nelson-Aalen, and
+  random-survival-forest analyses remain duration-based. The cycle-knot
+  regression procedure is not a direct substitute for their hazard or
+  survival-function estimands, so they were not segmented using this knot.
+- **Interpretability:** PCA-XGBoost SHAP refers to principal components;
+  LightGBM gain importance is not SHAP; LSTM inputs are screened using
+  surrogate-tree SHAP. None establishes causal sensor effects.
+- **AIC/BIC:** these likelihood criteria are not appropriate for the reported
+  XGBoost, LightGBM, or LSTM prediction fits.
+
+## Figures and notebook
+
+The executed analysis and cell outputs are in [`fd001_trial.ipynb`](./fd001_trial.ipynb).
+Relevant plots include:
+
+- [`knot_optimization.png`](./images/knot_optimization.png): fixed-Q0.5
+  grouped pseudo-censor validation.
+- [`optimized_knot_xgb_diagnostics.png`](./images/optimized_knot_xgb_diagnostics.png):
+  PCA-XGBoost predictions and residuals.
+- [`optimized_knot_xgb_survival.png`](./images/optimized_knot_xgb_survival.png):
+  empirical predicted-versus-actual test RUL distributions.
+- [`optimized_knot_xgb_ags_history.png`](./images/optimized_knot_xgb_ags_history.png):
+  segment-specific tuning histories.
+- [`optimized_knot_xgb_shap_early.png`](./images/optimized_knot_xgb_shap_early.png)
+  and [`optimized_knot_xgb_shap_late.png`](./images/optimized_knot_xgb_shap_late.png):
+  PCA-component Tree SHAP summaries.
+- [`segmented_lstm_training.png`](./images/segmented_lstm_training.png),
+  [`segmented_lstm_survival.png`](./images/segmented_lstm_survival.png), and
+  [`segmented_lstm_diagnostics.png`](./images/segmented_lstm_diagnostics.png):
+  Q0.5 LSTM training, test RUL distributions, and diagnostics.
+
+The survival-curve plots compare empirical test RUL distributions; they are
+not individual engine survival forecasts.
